@@ -1,8 +1,10 @@
 import html
+import json
 import logging
 import re
 import threading
 import time
+from typing import Dict
 import unicodedata
 from abc import ABC
 from pydantic import BaseModel
@@ -270,10 +272,11 @@ class OpenAITranslator(BaseTranslator):
 class OpenAIAdvancedTranslator(OpenAITranslator):
     name = "openai_advanced"
 
-    LANG_MAP = {
+    lang_map = {
         "en": "英语",
         "en-US": "英语",
         "zh-CN": "简体中文",
+        "zh": "简体中文",
         "zh-TW": "繁体中文",
         "ja": "日语",
         "ko": "韩语",
@@ -284,8 +287,41 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         "es": "西班牙语",
     }
 
+    dictionary = {}
+    dictionary_part = ""
+
     class _output_model(BaseModel):
         output: str
+
+    def __init__(
+        self,
+        lang_in,
+        lang_out,
+        model,
+        base_url=None,
+        api_key=None,
+        ignore_cache=False,
+        dictionary: Dict[str, str] = {},  # 词典，各种名词的原文:译文列表
+        qps: int = 200,
+    ):
+        super().__init__(
+            lang_in=lang_in,
+            lang_out=lang_out,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            ignore_cache=ignore_cache,
+        )
+        self.dictionary = dictionary
+        self.dictionary_part = (
+            "\n\n参考术语:\n" + "\n".join(f"{k}: {v}" for k, v in dictionary.items())
+            if dictionary
+            else ""
+        )
+
+        self.add_cache_impact_parameters("dictionary_part", self.dictionary_part)
+        # print(self.dictionary_part)
+        set_translate_rate_limiter(qps)
 
     def do_translate(self, text) -> str:
         json_schema = self._output_model.model_json_schema()
@@ -302,19 +338,17 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
 
     def prompt(self, text):
         is_auto_lang = self.lang_in == "auto"
-        in_lang_part = "任何" if is_auto_lang else f"{self.LANG_MAP[self.lang_in]}"
-
+        in_lang_part = "任何" if is_auto_lang else f"{self.lang_map[self.lang_in]}"
         # 生成非目标语言处理说明
         out_lang_part = (
-            f"{self.LANG_MAP[self.lang_out]}"
+            f"{self.lang_map[self.lang_out]}"
             if is_auto_lang
-            else f"{self.LANG_MAP[self.lang_out]}， 源文本中非{self.LANG_MAP[self.lang_in]}的部分内容直接使用原文作为译文"
+            else f"{self.lang_map[self.lang_out]}, 源文本中非{self.lang_map[self.lang_in]}的部分内容直接使用原文作为译文"
         )
         result = [
             {
                 "role": "system",
-                "content": rf"""你是一位专业的多语言法律领域翻译专家。请遵循以下指南:
-
+                "content": rf"""你是一位专业的多语言法律领域翻译专家. 请遵循以下指南:
 1. 翻译原则
 - 严格遵循法律用语的专业性和严谨性
 - 准确传达法律条款的权利义务关系
@@ -322,22 +356,22 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
 - 确保译文符合目标语言的法律表述习惯
 
 2. 基本要求
-- 严格保持原文的格式、标点和段落结构
-- 保留所有数学公式、代码等特殊标记
+- 严格保持原文的格式,标点和段落结构
+- 保留所有数学公式,代码等特殊标记
 - 使用权威法律词典和判例中的标准译法
 - 在保证法律含义准确的前提下使译文通顺
-- 对合同主体、权利义务、期限等关键内容的翻译尤其谨慎
+- 对合同主体,权利义务,期限等关键内容的翻译尤其谨慎
 
 3. 特殊情况处理
 - 遇到不确定或多种译法的术语,选择最合适的译法
 - 遇到文化差异内容和语气词,使用目标语言的习惯表达
 - 遇到短词组或单个词语,如无上下文,选择最常用的译法
-- 遇到短文本,如无上下文,选择最常用的译法
+- 遇到短文本,如无上下文,选择最常用的译法{self.dictionary_part}
 """,
             },
             {
                 "role": "user",
-                "content": f";; 将用户在下一行输入的{in_lang_part}内容翻译成{out_lang_part}。仅输出译文，如果是不必要的翻译（例如专有名词、代码、{'{{1}}, 等'}），返回原文。不要解释，不要备注。输入内容：",
+                "content": f";; 将用户在下一行输入的{in_lang_part}内容翻译成{out_lang_part}.仅输出译文,如果是不必要的翻译(例如专有名词、代码、{'{{1}}, 等'}),返回原文.不要解释,不要备注.输入内容:",
             },
             {
                 "role": "user",
@@ -355,30 +389,37 @@ if __name__ == "__main__":
         model="qwen2-instruct",
         base_url="http://127.0.0.1:9997/v1",
         api_key="EMPTY",
+        dictionary={
+            "与": "and",
+            "关于": "about",
+            "之": "of",
+        },
     )
     texts = [
         "与",
         "关于",
-        "之",
-        "定义",
-        "终止",
-        "兹此",
-        "用途",
-        "B",
-        "C",
-        "G",
-        "J",
-        "元",
-        "啊",
-        "软件许可所有权",
-        "甲方",
-        "乙方",
-        "丙方",
-        "丁方",
-        "我是经过 UFCC 许可认证的。",
-        ", You have no permission",
-        ", You have no permission {1}",
-        "你没有许可 {1}",
+        # "之",
+        # "定义",
+        # "终止",
+        # "兹此",
+        # "用途",
+        # "B",
+        # "C",
+        # "G",
+        # "J",
+        # "元",
+        # "啊",
+        # "软件许可所有权",
+        # "甲方",
+        # "乙方",
+        # "丙方",
+        # "丁方",
+        # "我是经过 UFCC 许可认证的。",
+        # ", You have no permission",
+        # ", You have no permission {1}",
+        # "你没有许可 {1}",
     ]
     for text in texts:
         print(translator.translate(text))
+
+    # 测试临时词典
