@@ -303,6 +303,12 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         ignore_cache=False,
         qps: int = 200,
     ):
+        # 确保语言代码在映射表中存在
+        if lang_in != "auto" and lang_in not in self.lang_map:
+            raise ValueError(f"不支持的源语言: {lang_in}")
+        if lang_out not in self.lang_map:
+            raise ValueError(f"不支持的目标语言: {lang_out}")
+
         super().__init__(
             lang_in=lang_in,
             lang_out=lang_out,
