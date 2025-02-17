@@ -301,7 +301,6 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         base_url=None,
         api_key=None,
         ignore_cache=False,
-        dictionary: Dict[str, str] = {},  # 词典，各种名词的原文:译文列表
         qps: int = 200,
     ):
         super().__init__(
@@ -312,31 +311,40 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
             api_key=api_key,
             ignore_cache=ignore_cache,
         )
-        self.dictionary = dictionary
-        self.dictionary_part = (
-            "\n\n参考术语:\n" + "\n".join(f"{k}: {v}" for k, v in dictionary.items())
-            if dictionary
-            else ""
-        )
-
-        self.add_cache_impact_parameters("dictionary_part", self.dictionary_part)
-        # print(self.dictionary_part)
         set_translate_rate_limiter(qps)
 
-    def do_translate(self, text) -> str:
-        json_schema = self._output_model.model_json_schema()
+    def translate(self, text, ignore_cache=False, dictionary: Dict[str, str] = None):
+        """
+        Translate the text, and the other part should call this method.
+        :param text: text to translate
+        :return: translated text
+        """
+        self.translate_call_count += 1
+        if not (self.ignore_cache or ignore_cache):
+            cache = self.cache.get(text)
+            if cache is not None:
+                self.translate_cache_call_count += 1
+                return cache
+        _translate_rate_limiter.wait()
+        translation = self.do_translate(text, dictionary)
+        if not (self.ignore_cache or ignore_cache):
+            self.cache.set(text, translation)
+        return translation
+
+    def do_translate(self, text, dictionary: Dict[str, str] = None) -> str:
+        json_schema = self._output_model.model_json_schema()  # add
         response = self.client.chat.completions.create(
             model=self.model,
             **self.options,
-            messages=self.prompt(text),
-            extra_body={"guided_json": json_schema},
+            messages=self.prompt(text, dictionary),
+            extra_body={"guided_json": json_schema},  # add
         )
-        result = self._output_model.model_validate_json(
-            response.choices[0].message.content
+        result = self._output_model.model_validate_json(  # add
+            response.choices[0].message.content  # add
         )
-        return result.output.strip()
+        return result.output.strip()  # modify
 
-    def prompt(self, text):
+    def prompt(self, text, dictionary: Dict[str, str] = None):
         is_auto_lang = self.lang_in == "auto"
         in_lang_part = "任何" if is_auto_lang else f"{self.lang_map[self.lang_in]}"
         # 生成非目标语言处理说明
@@ -345,6 +353,12 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
             if is_auto_lang
             else f"{self.lang_map[self.lang_out]}, 源文本中非{self.lang_map[self.lang_in]}的部分内容直接使用原文作为译文"
         )
+        if dictionary:
+            dictionary_part = "\n\n参考术语:\n" + "\n".join(
+                f"{k}: {v}" for k, v in dictionary.items()
+            )
+        else:
+            dictionary_part = ""
         result = [
             {
                 "role": "system",
@@ -366,7 +380,7 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
 - 遇到不确定或多种译法的术语,选择最合适的译法
 - 遇到文化差异内容和语气词,使用目标语言的习惯表达
 - 遇到短词组或单个词语,如无上下文,选择最常用的译法
-- 遇到短文本,如无上下文,选择最常用的译法{self.dictionary_part}
+- 遇到短文本,如无上下文,选择最常用的译法{dictionary_part}
 """,
             },
             {
@@ -378,7 +392,7 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
                 "content": text,
             },
         ]
-        # print(result)
+        print(result)
         return result
 
 
@@ -389,11 +403,6 @@ if __name__ == "__main__":
         model="qwen2-instruct",
         base_url="http://127.0.0.1:9997/v1",
         api_key="EMPTY",
-        dictionary={
-            "与": "and",
-            "关于": "about",
-            "之": "of",
-        },
     )
     texts = [
         "与",
@@ -420,6 +429,15 @@ if __name__ == "__main__":
         # "你没有许可 {1}",
     ]
     for text in texts:
-        print(translator.translate(text))
+        print(
+            translator.translate(
+                text,
+                dictionary={
+                    "与": "and",
+                    "关于": "about",
+                    "之": "of",
+                },
+            )
+        )
 
     # 测试临时词典
