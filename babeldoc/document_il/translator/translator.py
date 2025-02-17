@@ -5,7 +5,7 @@ import threading
 import time
 import unicodedata
 from abc import ABC
-
+from pydantic import BaseModel
 import openai
 import requests
 
@@ -265,3 +265,120 @@ class OpenAITranslator(BaseTranslator):
 
     def get_rich_text_right_placeholder(self, placeholder_id: int):
         return self.get_formular_placeholder(placeholder_id + 1)
+
+
+class OpenAIAdvancedTranslator(OpenAITranslator):
+    name = "openai_advanced"
+
+    LANG_MAP = {
+        "en": "英语",
+        "en-US": "英语",
+        "zh-CN": "简体中文",
+        "zh-TW": "繁体中文",
+        "ja": "日语",
+        "ko": "韩语",
+        "ru": "俄语",
+        "fr": "法语",
+        "de": "德语",
+        "it": "意大利语",
+        "es": "西班牙语",
+    }
+
+    class _output_model(BaseModel):
+        output: str
+
+    def do_translate(self, text) -> str:
+        json_schema = self._output_model.model_json_schema()
+        response = self.client.chat.completions.create(
+            model=self.model,
+            **self.options,
+            messages=self.prompt(text),
+            extra_body={"guided_json": json_schema},
+        )
+        result = self._output_model.model_validate_json(
+            response.choices[0].message.content
+        )
+        return result.output.strip()
+
+    def prompt(self, text):
+        is_auto_lang = self.lang_in == "auto"
+        in_lang_part = "任何" if is_auto_lang else f"{self.LANG_MAP[self.lang_in]}"
+
+        # 生成非目标语言处理说明
+        out_lang_part = (
+            f"{self.LANG_MAP[self.lang_out]}"
+            if is_auto_lang
+            else f"{self.LANG_MAP[self.lang_out]}， 源文本中非{self.LANG_MAP[self.lang_in]}的部分内容直接使用原文作为译文"
+        )
+        result = [
+            {
+                "role": "system",
+                "content": rf"""你是一位专业的多语言法律领域翻译专家。请遵循以下指南:
+
+1. 翻译原则
+- 严格遵循法律用语的专业性和严谨性
+- 准确传达法律条款的权利义务关系
+- 保持法律术语的规范性和一致性
+- 确保译文符合目标语言的法律表述习惯
+
+2. 基本要求
+- 严格保持原文的格式、标点和段落结构
+- 保留所有数学公式、代码等特殊标记
+- 使用权威法律词典和判例中的标准译法
+- 在保证法律含义准确的前提下使译文通顺
+- 对合同主体、权利义务、期限等关键内容的翻译尤其谨慎
+
+3. 特殊情况处理
+- 遇到不确定或多种译法的术语,选择最合适的译法
+- 遇到文化差异内容和语气词,使用目标语言的习惯表达
+- 遇到短词组或单个词语,如无上下文,选择最常用的译法
+- 遇到短文本,如无上下文,选择最常用的译法
+""",
+            },
+            {
+                "role": "user",
+                "content": f";; 将用户在下一行输入的{in_lang_part}内容翻译成{out_lang_part}。仅输出译文，如果是不必要的翻译（例如专有名词、代码、{'{{1}}, 等'}），返回原文。不要解释，不要备注。输入内容：",
+            },
+            {
+                "role": "user",
+                "content": text,
+            },
+        ]
+        # print(result)
+        return result
+
+
+if __name__ == "__main__":
+    translator = OpenAIAdvancedTranslator(
+        lang_in="zh-CN",
+        lang_out="en-US",
+        model="qwen2-instruct",
+        base_url="http://127.0.0.1:9997/v1",
+        api_key="EMPTY",
+    )
+    texts = [
+        "与",
+        "关于",
+        "之",
+        "定义",
+        "终止",
+        "兹此",
+        "用途",
+        "B",
+        "C",
+        "G",
+        "J",
+        "元",
+        "啊",
+        "软件许可所有权",
+        "甲方",
+        "乙方",
+        "丙方",
+        "丁方",
+        "我是经过 UFCC 许可认证的。",
+        ", You have no permission",
+        ", You have no permission {1}",
+        "你没有许可 {1}",
+    ]
+    for text in texts:
+        print(translator.translate(text))

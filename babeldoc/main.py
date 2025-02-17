@@ -16,6 +16,7 @@ from babeldoc.const import get_cache_file_path
 from babeldoc.document_il.translator.translator import BingTranslator
 from babeldoc.document_il.translator.translator import GoogleTranslator
 from babeldoc.document_il.translator.translator import OpenAITranslator
+from babeldoc.document_il.translator.translator import OpenAIAdvancedTranslator
 from babeldoc.document_il.translator.translator import set_translate_rate_limiter
 from babeldoc.translation_config import TranslationConfig
 
@@ -184,6 +185,12 @@ def create_parser():
         help="Use OpenAI translator.",
     )
     service_params.add_argument(
+        "--openai-advanced",
+        default=False,
+        action="store_true",
+        help="Use OpenAI advanced translator.",
+    )
+    service_params.add_argument(
         "--google",
         default=False,
         action="store_true",
@@ -313,16 +320,27 @@ async def main():
         return
 
     # 验证翻译服务选择
-    if not (args.openai or args.google or args.bing):
-        parser.error("必须选择一个翻译服务：--openai、--google 或 --bing")
+    if not (args.openai or args.openai_advanced or args.google or args.bing):
+        parser.error(
+            "必须选择一个翻译服务：--openai、--openai-advanced、--google 或 --bing"
+        )
 
     # 验证 OpenAI 参数
-    if args.openai and not args.openai_api_key:
+    if args.openai or args.openai_advanced and not args.openai_api_key:
         parser.error("使用 OpenAI 服务时必须提供 API key")
 
     # 实例化翻译器
     if args.openai:
         translator = OpenAITranslator(
+            lang_in=args.lang_in,
+            lang_out=args.lang_out,
+            model=args.openai_model,
+            base_url=args.openai_base_url,
+            api_key=args.openai_api_key,
+            ignore_cache=args.ignore_cache,
+        )
+    elif args.openai_advanced:
+        translator = OpenAIAdvancedTranslator(
             lang_in=args.lang_in,
             lang_out=args.lang_out,
             model=args.openai_model,
