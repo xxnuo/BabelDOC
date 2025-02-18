@@ -272,7 +272,7 @@ class OpenAITranslator(BaseTranslator):
 class OpenAIAdvancedTranslator(OpenAITranslator):
     name = "openai_advanced"
 
-    lang_map = {
+    advanced_lang_map = {
         "en": "英语",
         "en-US": "英语",
         "zh-CN": "简体中文",
@@ -303,12 +303,6 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         ignore_cache=False,
         qps: int = 200,
     ):
-        # 确保语言代码在映射表中存在
-        if lang_in != "auto" and lang_in not in self.lang_map:
-            raise ValueError(f"不支持的源语言: {lang_in}")
-        if lang_out not in self.lang_map:
-            raise ValueError(f"不支持的目标语言: {lang_out}")
-
         super().__init__(
             lang_in=lang_in,
             lang_out=lang_out,
@@ -351,13 +345,15 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         return response.choices[0].message.content
 
     def prompt(self, text, dictionary: Dict[str, str] = None):
-        is_auto_lang = self.lang_in == "auto"
-        in_lang_part = "任何" if is_auto_lang else f"{self.lang_map[self.lang_in]}"
+        is_auto_lang = self.lang_in == ""
+        in_lang_part = (
+            "任何" if is_auto_lang else f"{self.advanced_lang_map[self.lang_in]}"
+        )
         # 生成非目标语言处理说明
         out_lang_part = (
-            f"{self.lang_map[self.lang_out]}"
+            f"{self.advanced_lang_map[self.lang_out]}"
             if is_auto_lang
-            else f"{self.lang_map[self.lang_out]}, 源文本中非{self.lang_map[self.lang_in]}的部分内容直接使用原文作为译文"
+            else f"{self.advanced_lang_map[self.lang_out]}, 源文本中非{self.advanced_lang_map[self.lang_in]}的部分内容直接使用原文作为译文"
         )
         if dictionary:
             dictionary_part = "\n\n参考术语:\n" + "\n".join(
