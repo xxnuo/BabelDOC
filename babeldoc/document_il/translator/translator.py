@@ -287,11 +287,11 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         "es": "西班牙语",
     }
 
-    class TranslationOutput(BaseModel):
-        translated: str  # 译文
+    # class TranslationOutput(BaseModel):
+    #     translated: str  # 译文
 
-    # 获取模型的 JSON Schema
-    json_schema = TranslationOutput.model_json_schema()
+    # # 获取模型的 JSON Schema
+    # json_schema = TranslationOutput.model_json_schema()
 
     def __init__(
         self,
