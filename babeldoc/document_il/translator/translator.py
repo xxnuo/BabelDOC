@@ -287,11 +287,11 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         "es": "西班牙语",
     }
 
-    dictionary = {}
-    dictionary_part = ""
+    class TranslationOutput(BaseModel):
+        translated: str  # 译文
 
-    class _output_model(BaseModel):
-        output: str
+    # 获取模型的 JSON Schema
+    json_schema = TranslationOutput.model_json_schema()
 
     def __init__(
         self,
@@ -338,17 +338,17 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         return translation
 
     def do_translate(self, text, dictionary: Dict[str, str] = None) -> str:
-        json_schema = self._output_model.model_json_schema()  # add
         response = self.client.chat.completions.create(
             model=self.model,
             **self.options,
             messages=self.prompt(text, dictionary),
-            extra_body={"guided_json": json_schema},  # add
+            # extra_body={"guided_json": self.json_schema},  # add
         )
-        result = self._output_model.model_validate_json(  # add
-            response.choices[0].message.content  # add
-        )
-        return result.output.strip()  # modify
+        # result = self.TranslationOutput.model_validate_json(  # add
+        #     response.choices[0].message.content  # add
+        # )
+        # return result.translated.strip()  # modify
+        return response.choices[0].message.content
 
     def prompt(self, text, dictionary: Dict[str, str] = None):
         is_auto_lang = self.lang_in == "auto"
@@ -398,7 +398,7 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
                 "content": text,
             },
         ]
-        print(result)
+        # print(result)
         return result
 
 
@@ -406,33 +406,36 @@ if __name__ == "__main__":
     translator = OpenAIAdvancedTranslator(
         lang_in="zh-CN",
         lang_out="en-US",
-        model="qwen2-instruct",
-        base_url="http://127.0.0.1:9997/v1",
-        api_key="EMPTY",
+        # model="qwen2-instruct",
+        model="Qwen/Qwen2.5-72B-Instruct",
+        # base_url="http://127.0.0.1:9997/v1",
+        base_url="https://api.siliconflow.cn/v1",
+        # api_key="EMPTY",
+        api_key="sk-kxyyqvlclkbswvrnzyzjdzxoarunqjunjylvdeutleaxwhoi",
     )
     texts = [
         "与",
         "关于",
-        # "之",
-        # "定义",
-        # "终止",
-        # "兹此",
-        # "用途",
-        # "B",
-        # "C",
-        # "G",
-        # "J",
-        # "元",
-        # "啊",
-        # "软件许可所有权",
-        # "甲方",
-        # "乙方",
-        # "丙方",
-        # "丁方",
-        # "我是经过 UFCC 许可认证的。",
-        # ", You have no permission",
-        # ", You have no permission {1}",
-        # "你没有许可 {1}",
+        "之",
+        "定义",
+        "终止",
+        "兹此",
+        "用途",
+        "B",
+        "C",
+        "G",
+        "J",
+        "元",
+        "啊",
+        "软件许可所有权",
+        "甲方",
+        "乙方",
+        "丙方",
+        "丁方",
+        "我是经过 UFCC 许可认证的。",
+        ", You have no permission",
+        ", You have no permission {1}",
+        "你没有许可 {1}",
     ]
     for text in texts:
         print(
