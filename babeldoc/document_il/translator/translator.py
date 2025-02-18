@@ -302,6 +302,8 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         api_key=None,
         ignore_cache=False,
         qps: int = 200,
+        dict_names: list[str] = None,
+        temp_dict: Dict[str, str] = None,
     ):
         super().__init__(
             lang_in=lang_in,
@@ -311,6 +313,8 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
             api_key=api_key,
             ignore_cache=ignore_cache,
         )
+        self.add_cache_impact_parameters("dict_names", dict_names)
+        self.add_cache_impact_parameters("temp_dict", temp_dict)
         set_translate_rate_limiter(qps)
 
     def translate(self, text, ignore_cache=False, dictionary: Dict[str, str] = None):
@@ -319,6 +323,7 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
         :param text: text to translate
         :return: translated text
         """
+        # print(f"dictionary: {dictionary}")
         self.translate_call_count += 1
         if not (self.ignore_cache or ignore_cache):
             cache = self.cache.get(text)
@@ -361,6 +366,7 @@ class OpenAIAdvancedTranslator(OpenAITranslator):
             )
         else:
             dictionary_part = ""
+        # print(f"dictionary_part: {dictionary_part}")
         result = [
             {
                 "role": "system",
