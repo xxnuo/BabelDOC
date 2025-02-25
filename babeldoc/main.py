@@ -21,7 +21,7 @@ from babeldoc.document_il.translator.translator import set_translate_rate_limite
 from babeldoc.translation_config import TranslationConfig
 
 logger = logging.getLogger(__name__)
-__version__ = "0.1.7"
+__version__ = "0.1.13"
 
 
 def create_parser():
@@ -75,6 +75,12 @@ def create_parser():
         "-p",
         type=str,
         help="Pages to translate. If not set, translate all pages. like: 1,2,1-,-3,3-5",
+    )
+    translation_params.add_argument(
+        "--min-text-length",
+        type=int,
+        default=5,
+        help="Minimum text length to translate (default: 5)",
     )
     translation_params.add_argument(
         "--lang-in",
@@ -170,6 +176,12 @@ def create_parser():
         default=False,
         action="store_true",
         help="Enable all compatibility enhancement options (equivalent to --skip-clean --dual-translate-first --disable-rich-text-translate)",
+    )
+    translation_params.add_argument(
+        "--use-alternating-pages-dual",
+        default=False,
+        action="store_true",
+        help="Use alternating pages mode for dual PDF. When enabled, original and translated pages are arranged in alternate order.",
     )
     translation_params.add_argument(
         "--report-interval",
@@ -438,7 +450,9 @@ async def main():
             dual_translate_first=args.dual_translate_first,
             disable_rich_text_translate=args.disable_rich_text_translate,
             enhance_compatibility=args.enhance_compatibility,
+            use_alternating_pages_dual=args.use_alternating_pages_dual,
             report_interval=args.report_interval,
+            min_text_length=args.min_text_length,
         )
 
         # Create progress handler

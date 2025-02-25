@@ -179,7 +179,7 @@ class ILTranslator:
         def __init__(
             self,
             unicode: str,
-            placeholders: List[Union[RichTextPlaceholder, FormulaPlaceholder]],
+            placeholders: list[RichTextPlaceholder | FormulaPlaceholder],
             base_style: PdfStyle = None,
         ):
             self.unicode = unicode
@@ -304,7 +304,7 @@ class ILTranslator:
                         composition.pdf_same_style_characters.pdf_style,
                         paragraph.pdf_style,
                     )
-                    # 字号差异在0.7-1.3之间，可能是首字母变大效果，无需占位符
+                    # 字号差异在 0.7-1.3 之间，可能是首字母变大效果，无需占位符
                     or is_same_style_except_size(
                         composition.pdf_same_style_characters.pdf_style,
                         paragraph.pdf_style,
@@ -343,7 +343,7 @@ class ILTranslator:
                 )
                 return None
 
-        # 如果占位符数量超过50，且未禁用富文本翻译，则递归调用并禁用富文本翻译
+        # 如果占位符数量超过 50，且未禁用富文本翻译，则递归调用并禁用富文本翻译
         if len(placeholders) > 50 and not disable_rich_text_translate:
             logger.warning(
                 f"Too many placeholders ({len(placeholders)}) in paragraph[{paragraph.debug_id}], "
@@ -489,7 +489,8 @@ class ILTranslator:
                 ) and text.replace(" ", "") == "".join(
                     x.char_unicode for x in placeholder.composition.pdf_character
                 ).replace(
-                    " ", ""
+                    " ",
+                    "",
                 ):
                     comp = PdfParagraphComposition(
                         pdf_same_style_characters=placeholder.composition,
@@ -547,6 +548,13 @@ class ILTranslator:
                 tracker.set_input(translate_input.unicode)
 
                 text = translate_input.unicode
+
+                if len(text) < self.translation_config.min_text_length:
+                    logger.debug(
+                        f"Text too short to translate, skip. Text: {text}. Paragraph id: {paragraph.debug_id}.",
+                    )
+                    return
+
                 translated_text = self.translate_engine.translate(text)
 
                 tracker.set_output(translated_text)

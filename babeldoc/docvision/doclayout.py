@@ -76,7 +76,7 @@ os_name = platform.system()
 
 providers = []
 
-if os_name == "Darwin":  # Temporarily disable CoreML due to batch inference issues
+if os_name == "Darwin" and False:  # Temporarily disable CoreML due to some issues
     providers.append(
         (
             "CoreMLExecutionProvider",
@@ -91,8 +91,8 @@ if os_name == "Darwin":  # Temporarily disable CoreML due to batch inference iss
     # workaround for CoreML batch inference issues
     max_batch_size = 1
 else:
-    max_batch_size = 1024
-providers.append("CPUExecutionProvider")  # CPU执行提供者作为通用后备选项
+    max_batch_size = 1
+providers.append("CPUExecutionProvider")  # CPU 执行提供者作为通用后备选项
 
 
 class OnnxModel(DocLayoutModel):

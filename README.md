@@ -1,7 +1,7 @@
 <!-- # Yet Another Document Translator -->
 
 <div align="center">
-<img src="./docs/images/banner.png" width="320px"  alt="YADT"/>
+<img src="https://s.immersivetranslate.com/assets/r2-uploads/images/babeldoc-banner.png" width="320px"  alt="YADT"/>
 
 
 <h2 id="title">BabelDOC</h2>
@@ -31,7 +31,7 @@ PDF scientific paper translation and bilingual comparison library.
 ## Preview
 
 <div align="center">
-<img src="./docs/images/preview.gif" width="80%"/>
+<img src="https://s.immersivetranslate.com/assets/r2-uploads/images/babeldoc-preview.png" width="80%"/>
 </div>
 
 ## Getting Started
@@ -110,6 +110,7 @@ uv run babeldoc --bing --files example.pdf --files example2.pdf
 - `--dual-translate-first`: Put translated pages first in dual PDF mode (default: original pages first)
 - `--disable-rich-text-translate`: Disable rich text translation (may help improve compatibility with some PDFs)
 - `--enhance-compatibility`: Enable all compatibility enhancement options (equivalent to --skip-clean --dual-translate-first --disable-rich-text-translate)
+- `--use-alternating-pages-dual`: Use alternating pages mode for dual PDF. When enabled, original and translated pages are arranged in alternate order. When disabled (default), original and translated pages are shown side by side on the same page.
 
 > [!TIP]
 > - Both `--skip-clean` and `--dual-translate-first` may help improve compatibility with some PDF readers
@@ -123,6 +124,7 @@ uv run babeldoc --bing --files example.pdf --files example2.pdf
 - `--ignore-cache`: Ignore translation cache and force retranslation
 - `--no-dual`: Do not output bilingual PDF files
 - `--no-mono`: Do not output monolingual PDF files
+- `--min-text-length`: Minimum text length to translate (default: 5)
 - `--openai`: Use OpenAI for translation (default: False)
 - `--bing`: Use Bing for translation (default: False)
 - `--google`: Use Google Translate for translation (default: False)
