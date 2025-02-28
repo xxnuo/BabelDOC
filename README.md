@@ -253,6 +253,7 @@ Everyone interacting in YADT and its sub-projects' codebases, issue trackers, ch
 - [pdfminer](https://github.com/pdfminer/pdfminer.six)
 - [PyMuPDF](https://github.com/pymupdf/PyMuPDF)
 - [Asynchronize](https://github.com/multimeric/Asynchronize/tree/master?tab=readme-ov-file)
+- [KnuthPlassLinebreak](https://github.com/alex-panda/KnuthPlassLinebreak/)
 
 <h2 id="star_hist">Star History</h2>
 
