@@ -13,6 +13,9 @@ from babeldoc.document_il import PdfParagraphComposition
 from babeldoc.document_il import PdfStyle
 from babeldoc.document_il import il_version_1
 from babeldoc.document_il.utils.fontmap import FontMapper
+from babeldoc.document_il.utils.knuth_plass import Box as KPBox
+from babeldoc.document_il.utils.knuth_plass import Glue as KPGlue
+from babeldoc.document_il.utils.knuth_plass import KnuthPlassParagraph as KPParagraph
 from babeldoc.translation_config import TranslationConfig
 
 logger = logging.getLogger(__name__)
@@ -451,6 +454,63 @@ class Typesetting:
         self.retypeset(paragraph, page, typesetting_units)
 
     def _layout_typesetting_units(
+        self,
+        typesetting_units: list[TypesettingUnit],
+        paragraph_box: Box,
+        scale: float,
+        line_spacing: float,
+        paragraph: il_version_1.PdfParagraph,
+    ) -> tuple[list[TypesettingUnit], bool]:
+        """布局排版单元。
+
+        Args:
+            typesetting_units: 要布局的排版单元列表
+            box: 布局边界框
+            scale: 缩放因子
+            line_spacing: 行间距
+
+        Returns:
+            tuple[list[TypesettingUnit], bool]: (已布局的排版单元列表，是否所有单元都放得下)
+        """
+        line_widths = paragraph_box.x2 - paragraph_box.x
+
+        # 计算字号众数
+        font_sizes = []
+        for unit in typesetting_units:
+            if getattr(unit, "font_size", None):
+                font_sizes.append(unit.font_size)
+            if getattr(unit, "char", None):
+                font_sizes.append(unit.char.pdf_style.font_size)
+        font_sizes.sort()
+        font_size_mode = statistics.mode(font_sizes)
+
+        space_width = (
+            self.font_mapper.base_font.char_lengths("你", font_size_mode * scale)[0]
+            * 0.5
+        )
+
+        line_widths = line_widths - line_widths % font_size_mode
+        kp_paragraph = KPParagraph()
+
+        for unit in typesetting_units:
+            unit_width = unit.width * scale
+            if unit.is_space:
+                kp_paragraph.append(
+                    KPGlue(unit_width / 2, unit_width, unit_width / 2), unit.unicode
+                )
+            else:
+                kp_paragraph.append(KPBox(unit_width), unit.unicode)
+                if unit.is_chinese_char:
+                    kp_paragraph.append(
+                        KPGlue(space_width / 2, 0, space_width / 2), unit.unicode
+                    )
+        kp_paragraph.append_std_end()
+        breaks = kp_paragraph.calc_knuth_plass_breaks(line_widths, 100, tolerance=1)
+        total_num_lines = len(breaks)
+
+        print()
+
+    def _old_layout_typesetting_units(
         self,
         typesetting_units: list[TypesettingUnit],
         box: Box,

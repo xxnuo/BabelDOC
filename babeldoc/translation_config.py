@@ -158,6 +158,16 @@ class TranslationConfig:
         if self.progress_monitor is not None:
             self.progress_monitor.cancel()
 
+    def normalize_lang_out(self) -> str:
+        """标准化输出语言。
+
+        Returns:
+            标准化后的输出语言
+        """
+        if "zh" in self.lang_out.lower():
+            return "zh-CN"
+        return self.lang_out.lower()
+
 
 class TranslateResult:
     original_pdf_path: str
