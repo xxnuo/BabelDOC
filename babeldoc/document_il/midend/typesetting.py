@@ -13,6 +13,7 @@ from babeldoc.document_il import PdfParagraphComposition
 from babeldoc.document_il import PdfStyle
 from babeldoc.document_il import il_version_1
 from babeldoc.document_il.utils.fontmap import FontMapper
+from babeldoc.document_il.utils.knuth_plass import GLUE
 from babeldoc.document_il.utils.knuth_plass import Box as KPBox
 from babeldoc.document_il.utils.knuth_plass import Glue as KPGlue
 from babeldoc.document_il.utils.knuth_plass import KnuthPlassParagraph as KPParagraph
@@ -465,7 +466,7 @@ class Typesetting:
 
         Args:
             typesetting_units: 要布局的排版单元列表
-            box: 布局边界框
+            paragraph_box: 布局边界框
             scale: 缩放因子
             line_spacing: 行间距
 
@@ -491,24 +492,141 @@ class Typesetting:
 
         line_widths = line_widths - line_widths % font_size_mode
         kp_paragraph = KPParagraph()
-
+        last_is_glue = False
         for unit in typesetting_units:
             unit_width = unit.width * scale
             if unit.is_space:
                 kp_paragraph.append(
                     KPGlue(unit_width / 2, unit_width, unit_width / 2), unit.unicode
                 )
-            else:
-                kp_paragraph.append(KPBox(unit_width), unit.unicode)
-                if unit.is_chinese_char:
+                last_is_glue = True
+            elif getattr(unit, "formular", None):
+                if not last_is_glue:
                     kp_paragraph.append(
                         KPGlue(space_width / 2, 0, space_width / 2), unit.unicode
                     )
+                kp_paragraph.append(KPBox(unit_width), unit.unicode)
+                kp_paragraph.append(
+                    KPGlue(space_width / 2, 0, space_width / 2), unit.unicode
+                )
+                last_is_glue = True
+            else:
+                kp_paragraph.append(KPBox(unit_width), unit.unicode)
+                last_is_glue = False
+                if unit.is_chinese_char:
+                    kp_paragraph.append(KPGlue(0, 0, 0), unit.unicode)
+                    last_is_glue = True
         kp_paragraph.append_std_end()
-        breaks = kp_paragraph.calc_knuth_plass_breaks(line_widths, 100, tolerance=1)
+        try:
+            breaks = kp_paragraph.calc_knuth_plass_breaks(line_widths, 100, tolerance=1)
+        except Exception as e:
+            return [], False
         total_num_lines = len(breaks)
 
-        print()
+        # 如果没有找到有效的断行，表示无法排版
+        if not breaks:
+            return [], False
+
+        # 计算平均行高
+        avg_height = (
+            sum(unit.height * scale for unit in typesetting_units)
+            / len(typesetting_units)
+            if typesetting_units
+            else 0
+        )
+
+        # 初始化位置为右上角，并按行数调整垂直位置
+        current_y = paragraph_box.y2 - avg_height
+
+        # 存储已排版的单元和映射关系
+        typeset_units = []
+        all_units_fit = True
+
+        # 创建一个映射，将KPParagraph中的位置映射到typesetting_units中的位置
+        # 因为KPParagraph会为中文字符添加额外的KPGlue
+        unit_map = {}
+        kp_index = 0
+        for i, unit in enumerate(typesetting_units):
+            unit_map[kp_index] = i
+            kp_index += 1
+            # 为中文字符添加额外的KPGlue，因此需要跳过一个位置
+            if unit.is_chinese_char:
+                kp_index += 1
+
+        # 遍历每个断行
+        last_break_position = 0
+        for i, brk in enumerate(breaks):
+            line_num = brk.line
+            ratio = brk.ratio
+            line_height = 0
+
+            # 获取此行的内容范围
+            start_pos = last_break_position
+            if i < len(breaks) - 1:
+                end_pos = brk.position
+            else:
+                # 最后一行包含剩余所有内容
+                end_pos = len(kp_paragraph.specs) - 3  # 减去append_std_end添加的3个元素
+
+            # 计算此行的实际宽度
+            line_actual_width = 0
+            for j in range(start_pos, end_pos):
+                spec = kp_paragraph.specs[j]
+                if spec.t == GLUE:
+                    line_actual_width += spec.r_width(ratio)
+                else:
+                    line_actual_width += spec.width
+
+            # 根据排版选项调整行的起始x坐标
+            current_x = paragraph_box.x
+
+            # 处理此行中的每个单元
+            units_in_line = []
+            for j in range(start_pos, end_pos):
+                if j in unit_map:
+                    unit_idx = unit_map[j]
+                    unit = typesetting_units[unit_idx]
+
+                    # 计算当前单元在当前缩放和比率下的实际宽度
+                    spec = kp_paragraph.specs[j]
+                    if spec.t == GLUE:
+                        # 跳过KPGlue，它是为了调整间距用的
+                        continue
+
+                    unit_width = unit.width * scale
+                    unit_height = unit.height * scale
+
+                    # 对于中文字符之间的额外空格，需要考虑调整比率
+                    if unit.is_chinese_char and j + 1 < end_pos:
+                        next_spec = kp_paragraph.specs[j + 1]
+                        if next_spec.t == GLUE:
+                            # 调整宽度以包含可能的空格
+                            unit_width += next_spec.r_width(ratio)
+
+                    # 放置当前单元
+                    relocated_unit = unit.relocate(current_x, current_y, scale)
+                    units_in_line.append(relocated_unit)
+
+                    # 更新当前行的最大高度
+                    line_height = max(line_height, unit_height)
+
+                    # 更新x坐标
+                    current_x += unit_width
+
+            # 将此行的单元添加到结果列表
+            typeset_units.extend(units_in_line)
+
+            # 更新y坐标，为下一行做准备
+            current_y -= line_height * line_spacing
+
+            # 检查是否超出底部边界
+            if current_y - avg_height < paragraph_box.y:
+                all_units_fit = False
+                break
+
+            last_break_position = end_pos
+
+        return typeset_units, all_units_fit
 
     def _old_layout_typesetting_units(
         self,
