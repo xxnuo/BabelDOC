@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pymupdf
+import uharfbuzz as hb
 
 from babeldoc.assets import assets
 from babeldoc.format.pdf.document_il import PdfFont
@@ -115,6 +116,33 @@ class FontMapper:
         self.map_in_type = functools.lru_cache(maxsize=10240, typed=True)(
             self.map_in_type
         )
+        self.get_hb_font = functools.lru_cache(maxsize=10240, typed=True)(
+            self.get_hb_font
+        )
+        self.font_id_cmap = {}
+
+    def get_hb_font(self, font_id: str) -> hb.Font:
+        """
+        Get the HarfBuzz font object for the given font ID.
+        """
+        if font_id not in self.fontid2font:
+            raise ValueError(f"Font ID {font_id} not found in font map.")
+        pymupdf_font = self.fontid2font[font_id]
+        blob = hb.Blob.from_file_path(pymupdf_font.font_path.as_posix())
+        hb_face = hb.Face(blob)
+        hb_font = hb.Font(hb_face)
+
+        hb_unicodes = hb_face.unicodes
+        gid_to_unicode = {}
+        for unicode in hb_unicodes:
+            gid = hb_font.get_nominal_glyph(unicode)
+            gid_to_unicode[gid] = chr(unicode)
+        self.font_id_cmap[font_id] = gid_to_unicode
+        hb_font.scale = (2048, 2048)
+        logger.info(
+            f"font {font_id} scale: {hb_font.scale}, ptem: {hb_font.ptem}, ppem: {hb_font.ppem}"
+        )
+        return hb_font, gid_to_unicode
 
     def has_char(self, char_unicode: str):
         if len(char_unicode) != 1:

@@ -9,6 +9,7 @@ from functools import cache
 
 import pymupdf
 import regex
+import uharfbuzz as hb
 from rtree import index
 
 from babeldoc.const import WATERMARK_VERSION
@@ -100,6 +101,10 @@ class TypesettingUnit:
         style: PdfStyle | None = None,
         xobj_id: int | None = None,
         debug_info: bool = False,
+        hb_codepoint: int | None = None,
+        hb_box: Box | None = None,
+        hb_yoffset: float | None = None,
+        hb_xoffset: float | None = None,
     ):
         assert (char is not None) + (formular is not None) + (
             unicode is not None
@@ -125,6 +130,10 @@ class TypesettingUnit:
         self.height_cache: float | None = None
 
         self.font_size: float | None = None
+        self.hb_codepoint: int | None = hb_codepoint
+        self.hb_box: Box | None = hb_box
+        self.hb_yoffset: float | None = hb_yoffset
+        self.hb_xoffset: float | None = hb_xoffset
 
         if unicode:
             assert font_size, "Font size must be provided when unicode is provided"
@@ -429,7 +438,9 @@ class TypesettingUnit:
         return self.unicode is None
 
     def calculate_box(self):
-        if self.char:
+        if self.hb_box:
+            return self.hb_box
+        elif self.char:
             box = copy.deepcopy(self.char.box)
             if self.char.visual_bbox and self.char.visual_bbox.box:
                 box.y = self.char.visual_bbox.box.y
@@ -601,6 +612,16 @@ class TypesettingUnit:
 
         elif self.unicode:
             # 对于 Unicode 字符，我们存储新的位置信息
+            if self.hb_box:
+                new_hb_box = Box(
+                    x=x,
+                    y=y,
+                    x2=x + self.width * scale,
+                    y2=y + self.height * scale,
+                )
+            else:
+                new_hb_box = None
+
             new_unit = TypesettingUnit(
                 unicode=self.unicode,
                 font=self.font,
@@ -609,6 +630,10 @@ class TypesettingUnit:
                 style=self.style,
                 xobj_id=self.xobj_id,
                 debug_info=self.debug_info,
+                hb_box=new_hb_box,
+                hb_codepoint=self.hb_codepoint,
+                hb_xoffset=self.hb_xoffset * scale if self.hb_xoffset else None,
+                hb_yoffset=self.hb_yoffset * scale if self.hb_yoffset else None,
             )
             new_unit.x = x
             new_unit.y = y
@@ -644,8 +669,18 @@ class TypesettingUnit:
             # 计算字符宽度
             char_width = self.width
 
+            if self.hb_codepoint:
+                gid = self.hb_codepoint
+            else:
+                gid = self.font.has_glyph(ord(self.unicode))
+
+            if self.hb_xoffset:
+                x += self.hb_xoffset
+            if self.hb_yoffset:
+                y += self.hb_yoffset
+
             new_char = PdfCharacter(
-                pdf_character_id=self.font.has_glyph(ord(self.unicode)),
+                pdf_character_id=gid,
                 char_unicode=self.unicode,
                 box=Box(
                     x=x,  # 使用存储的位置
@@ -1162,7 +1197,7 @@ class Typesetting:
         current_y = box.y2 - avg_height
         box = copy.deepcopy(box)
         # box.y -= avg_height * (line_spacing - 1.01) # line_spacing 已被替换为 line_skip
-        line_height = 0
+        line_height = avg_height
         current_line_heights = []  # 存储当前行所有元素的高度
 
         # 存储已排版的单元
@@ -1308,7 +1343,10 @@ class Typesetting:
                         for char in composition.pdf_same_style_characters.pdf_character
                     ],
                 )
-            elif composition.pdf_same_style_unicode_characters:
+            elif (
+                composition.pdf_same_style_unicode_characters
+                and composition.pdf_same_style_unicode_characters.unicode
+            ):
                 style = composition.pdf_same_style_unicode_characters.pdf_style
                 if style is None:
                     logger.warning(
@@ -1326,26 +1364,97 @@ class Typesetting:
                     )
                     continue
                 font = get_font(font_id, paragraph.xobj_id)
-                if composition.pdf_same_style_unicode_characters.unicode:
-                    result.extend(
-                        [
-                            TypesettingUnit(
-                                unicode=char_unicode,
-                                font=self.font_mapper.map(
-                                    font,
-                                    char_unicode,
-                                ),
-                                original_font=font,
-                                font_size=style.font_size,
-                                style=style,
-                                xobj_id=paragraph.xobj_id,
-                                debug_info=composition.pdf_same_style_unicode_characters.debug_info
-                                or False,
-                            )
-                            for char_unicode in composition.pdf_same_style_unicode_characters.unicode
-                            if char_unicode not in ("\n",)
-                        ],
+
+                char_spans = []
+                current_font = None
+                current_chars = []
+                # 做字体映射，然后按照目标字体，聚合成字符串
+                for (
+                    char_unicode
+                ) in composition.pdf_same_style_unicode_characters.unicode:
+                    if char_unicode in ("\n",):
+                        continue
+                    target_font = self.font_mapper.map(
+                        font,
+                        char_unicode,
                     )
+                    if not current_font:
+                        current_font = target_font
+                    if target_font.font_id != current_font.font_id:
+                        char_spans.append((current_font, "".join(current_chars)))
+                        current_chars = []
+                    current_font = target_font
+                    current_chars.append(char_unicode)
+                if current_chars:
+                    char_spans.append(
+                        (
+                            current_font,
+                            unicodedata.normalize("NFC", "".join(current_chars)),
+                        )
+                    )
+
+                for font, strs in char_spans:
+                    hb_font, cmap = self.font_mapper.get_hb_font(font.font_id)
+
+                    buf = hb.Buffer()
+                    buf.add_str(strs)
+                    buf.guess_segment_properties()
+
+                    features = {"kern": True, "liga": True}
+                    hb.shape(hb_font, buf, features)
+
+                    infos = buf.glyph_infos
+                    positions = buf.glyph_positions
+
+                    for info, pos in zip(infos, positions, strict=False):
+                        gid = info.codepoint
+                        glyph_name = hb_font.glyph_to_string(gid)
+                        cluster = info.cluster
+                        x_advance = pos.x_advance
+                        x_offset = pos.x_offset
+                        y_offset = pos.y_offset
+
+                        hb_box = Box(
+                            0, 0, x_advance / 2048.0 * style.font_size, style.font_size
+                        )
+
+                        tu = TypesettingUnit(
+                            unicode=cmap.get(gid, "a"),
+                            font=font,
+                            original_font=font,
+                            font_size=style.font_size,
+                            style=style,
+                            xobj_id=paragraph.xobj_id,
+                            debug_info=composition.pdf_same_style_unicode_characters.debug_info
+                            or False,
+                            hb_codepoint=gid,
+                            hb_box=hb_box,
+                            hb_xoffset=x_offset / 2048.0 * style.font_size,
+                            hb_yoffset=y_offset / 2048.0 * style.font_size,
+                        )
+
+                        result.append(tu)
+
+                # if composition.pdf_same_style_unicode_characters.unicode:
+                #     result.extend(
+                #         [
+                #             TypesettingUnit(
+                #                 unicode=char_unicode,
+                #                 font=self.font_mapper.map(
+                #                     font,
+                #                     char_unicode,
+                #                 ),
+                #                 original_font=font,
+                #                 font_size=style.font_size,
+                #                 style=style,
+                #                 xobj_id=paragraph.xobj_id,
+                #                 debug_info=composition.pdf_same_style_unicode_characters.debug_info
+                #                 or False,
+                #             )
+                #             for char_unicode in composition.pdf_same_style_unicode_characters.unicode
+                #             if char_unicode not in ("\n",)
+                #         ],
+                #     )
             elif composition.pdf_formula:
                 result.extend([TypesettingUnit(formular=composition.pdf_formula)])
             else:
