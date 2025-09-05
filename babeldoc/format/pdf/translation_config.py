@@ -174,6 +174,12 @@ class TranslationConfig:
         non_formula_line_iou_threshold: float = 0.9,
         figure_table_protection_threshold: float = 0.9,
         skip_formula_offset_calculation: bool = False,
+        # QwenMT specific parameters
+        use_qwenmt: bool = False,
+        qwenmt_model: str = "qwen-mt-turbo",
+        qwenmt_plus_model: str = "qwen-plus-latest",
+        qwenmt_api_key: str | None = None,
+        qwenmt_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
     ):
         self.translator = translator
         initial_user_glossaries = list(glossaries) if glossaries else []
@@ -314,6 +320,21 @@ class TranslationConfig:
 
         if self.ocr_workaround:
             self.remove_non_formula_lines = False
+
+        # QwenMT specific configuration
+        self.use_qwenmt = use_qwenmt
+        self.qwenmt_model = qwenmt_model
+        self.qwenmt_plus_model = qwenmt_plus_model
+        self.qwenmt_api_key = qwenmt_api_key
+        self.qwenmt_base_url = qwenmt_base_url
+
+        # When using QwenMT with glossaries, force enable auto glossary extraction
+        # to work around QwenMT's limitation of not supporting multi-glossaries directly
+        if self.use_qwenmt and glossaries and not auto_extract_glossary:
+            logger.warning(
+                "QwenMT does not support multiple glossaries directly. Enabling auto glossary extraction."
+            )
+            self.auto_extract_glossary = True
 
     def parse_pages(self, pages_str: str | None) -> list[tuple[int, int]] | None:
         """解析页码字符串，返回页码范围列表

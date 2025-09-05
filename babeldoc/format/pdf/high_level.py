@@ -39,6 +39,9 @@ from babeldoc.format.pdf.document_il.midend.il_translator import ILTranslator
 from babeldoc.format.pdf.document_il.midend.il_translator_llm_only import (
     ILTranslatorLLMOnly,
 )
+from babeldoc.format.pdf.document_il.midend.il_translator_qwenmt import (
+    ILTranslatorQwenMT,
+)
 from babeldoc.format.pdf.document_il.midend.layout_parser import LayoutParser
 from babeldoc.format.pdf.document_il.midend.paragraph_finder import ParagraphFinder
 from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAndFormulas
@@ -923,10 +926,15 @@ def _do_translate_single(
     translate_engine = translation_config.translator
 
     support_llm_translate = False
+    is_qwenmt = False
     try:
         if translate_engine and hasattr(translate_engine, "do_llm_translate"):
             translate_engine.do_llm_translate(None)
             support_llm_translate = True
+            # Check if this is QwenMT translator
+            is_qwenmt = (
+                hasattr(translate_engine, "name") and translate_engine.name == "qwenmt"
+            )
     except NotImplementedError:
         support_llm_translate = False
 
@@ -934,7 +942,10 @@ def _do_translate_single(
         AutomaticTermExtractor(translate_engine, translation_config).procress(docs)
 
     if not translation_config.skip_translation:
-        if support_llm_translate:
+        if is_qwenmt:
+            logger.info("Using QwenMT translator with hybrid approach")
+            il_translator = ILTranslatorQwenMT(translate_engine, translation_config)
+        elif support_llm_translate:
             il_translator = ILTranslatorLLMOnly(translate_engine, translation_config)
         else:
             il_translator = ILTranslator(translate_engine, translation_config)

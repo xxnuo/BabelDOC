@@ -19,6 +19,7 @@ from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.format.pdf.translation_config import WatermarkOutputMode
 from babeldoc.glossary import Glossary
 from babeldoc.translator.translator import OpenAITranslator
+from babeldoc.translator.translator import QwenMTTranslator
 from babeldoc.translator.translator import set_translate_rate_limiter
 
 logger = logging.getLogger(__name__)
@@ -366,6 +367,11 @@ def create_parser():
         action="store_true",
         help="Use OpenAI translator.",
     )
+    service_group.add_argument(
+        "--qwenmt",
+        action="store_true",
+        help="Use QwenMT translator with hybrid approach.",
+    )
     service_group = parser.add_argument_group(
         "Translation - OpenAI Options",
         description="OpenAI specific options",
@@ -383,6 +389,32 @@ def create_parser():
         "--openai-api-key",
         "-k",
         help="The API key for the OpenAI API.",
+    )
+
+    # QwenMT specific options
+    qwenmt_group = parser.add_argument_group(
+        "Translation - QwenMT Options",
+        description="QwenMT specific options",
+    )
+    qwenmt_group.add_argument(
+        "--qwenmt-model",
+        default="qwen-mt-turbo",
+        choices=["qwen-mt-turbo", "qwen-mt-plus"],
+        help="The QwenMT model to use for regular translation (default: qwen-mt-turbo).",
+    )
+    qwenmt_group.add_argument(
+        "--qwenmt-plus-model",
+        default="qwen-plus-latest",
+        help="The Qwen-Plus model to use for complex paragraphs (default: qwen-plus-latest).",
+    )
+    qwenmt_group.add_argument(
+        "--qwenmt-api-key",
+        help="The API key for the QwenMT/DashScope API.",
+    )
+    qwenmt_group.add_argument(
+        "--qwenmt-base-url",
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        help="The base URL for the QwenMT API (default: DashScope compatible endpoint).",
     )
 
     return parser
@@ -415,12 +447,16 @@ async def main():
         return
 
     # 验证翻译服务选择
-    if not args.openai:
-        parser.error("必须选择一个翻译服务：--openai")
+    if not args.openai and not args.qwenmt:
+        parser.error("必须选择一个翻译服务：--openai 或 --qwenmt")
 
     # 验证 OpenAI 参数
     if args.openai and not args.openai_api_key:
         parser.error("使用 OpenAI 服务时必须提供 API key")
+
+    # 验证 QwenMT 参数
+    if args.qwenmt and not args.qwenmt_api_key:
+        parser.error("使用 QwenMT 服务时必须提供 API key")
 
     # 实例化翻译器
     if args.openai:
@@ -430,6 +466,16 @@ async def main():
             model=args.openai_model,
             base_url=args.openai_base_url,
             api_key=args.openai_api_key,
+            ignore_cache=args.ignore_cache,
+        )
+    elif args.qwenmt:
+        translator = QwenMTTranslator(
+            lang_in=args.lang_in,
+            lang_out=args.lang_out,
+            qwenmt_model=args.qwenmt_model,
+            qwenmt_plus_model=args.qwenmt_plus_model,
+            base_url=args.qwenmt_base_url,
+            api_key=args.qwenmt_api_key,
             ignore_cache=args.ignore_cache,
         )
     else:
@@ -617,6 +663,16 @@ async def main():
             non_formula_line_iou_threshold=args.non_formula_line_iou_threshold,
             figure_table_protection_threshold=args.figure_table_protection_threshold,
             skip_formula_offset_calculation=args.skip_formula_offset_calculation,
+            # QwenMT specific parameters
+            use_qwenmt=args.qwenmt,
+            qwenmt_model=getattr(args, "qwenmt_model", "qwen-mt-turbo"),
+            qwenmt_plus_model=getattr(args, "qwenmt_plus_model", "qwen-plus-latest"),
+            qwenmt_api_key=getattr(args, "qwenmt_api_key", None),
+            qwenmt_base_url=getattr(
+                args,
+                "qwenmt_base_url",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ),
         )
 
         def nop(_x):

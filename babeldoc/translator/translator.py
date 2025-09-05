@@ -1,4 +1,5 @@
 import contextlib
+import json
 import logging
 import threading
 import time
@@ -116,6 +117,14 @@ class BaseTranslator(ABC):
         """
         self.cache.add_params(k, v)
 
+    def get_cache_key(self, text):
+        """
+        Generate cache key for the given text. Override in subclasses to include additional parameters.
+        :param text: text to translate
+        :return: cache key string
+        """
+        return text
+
     def translate(self, text, ignore_cache=False, rate_limit_params: dict = None):
         """
         Translate the text, and the other part should call this method.
@@ -123,9 +132,10 @@ class BaseTranslator(ABC):
         :return: translated text
         """
         self.translate_call_count += 1
+        cache_key = self.get_cache_key(text)
         if not (self.ignore_cache or ignore_cache):
             try:
-                cache = self.cache.get(text)
+                cache = self.cache.get(cache_key)
                 if cache is not None:
                     self.translate_cache_call_count += 1
                     return cache
@@ -134,7 +144,7 @@ class BaseTranslator(ABC):
         _translate_rate_limiter.wait()
         translation = self.do_translate(text, rate_limit_params)
         if not (self.ignore_cache or ignore_cache):
-            self.cache.set(text, translation)
+            self.cache.set(cache_key, translation)
         return translation
 
     def llm_translate(self, text, ignore_cache=False, rate_limit_params: dict = None):
@@ -144,9 +154,10 @@ class BaseTranslator(ABC):
         :return: translated text
         """
         self.translate_call_count += 1
+        cache_key = self.get_cache_key(text)
         if not (self.ignore_cache or ignore_cache):
             try:
-                cache = self.cache.get(text)
+                cache = self.cache.get(cache_key)
                 if cache is not None:
                     self.translate_cache_call_count += 1
                     return cache
@@ -155,7 +166,7 @@ class BaseTranslator(ABC):
         _translate_rate_limiter.wait()
         translation = self.do_llm_translate(text, rate_limit_params)
         if not (self.ignore_cache or ignore_cache):
-            self.cache.set(text, translation)
+            self.cache.set(cache_key, translation)
         return translation
 
     @abstractmethod
@@ -292,6 +303,187 @@ class OpenAITranslator(BaseTranslator):
     def get_formular_placeholder(self, placeholder_id: int):
         return "{v" + str(placeholder_id) + "}", f"{{\\s*v\\s*{placeholder_id}\\s*}}"
         return "{{" + str(placeholder_id) + "}}"
+
+    def get_rich_text_left_placeholder(self, placeholder_id: int):
+        return (
+            f"<style id='{placeholder_id}'>",
+            f"<\\s*style\\s*id\\s*=\\s*'\\s*{placeholder_id}\\s*'\\s*>",
+        )
+
+    def get_rich_text_right_placeholder(self, placeholder_id: int):
+        return "</style>", r"<\s*\/\s*style\s*>"
+
+
+class QwenMTTranslator(BaseTranslator):
+    name = "qwenmt"
+
+    # Language code mapping for QwenMT API
+    lang_map = {
+        "zh": "Chinese",
+        "zh-cn": "Chinese",
+        "zh-hans": "Chinese",
+        "zh-tw": "Traditional Chinese",
+        "zh-hant": "Traditional Chinese",
+        "en": "English",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "fr": "French",
+        "de": "German",
+        "es": "Spanish",
+        "it": "Italian",
+        "pt": "Portuguese",
+        "ru": "Russian",
+        "ar": "Arabic",
+        "th": "Thai",
+        "vi": "Vietnamese",
+        "id": "Indonesian",
+        "ms": "Malay",
+        "hi": "Hindi",
+        "tr": "Turkish",
+        "pl": "Polish",
+        "nl": "Dutch",
+    }
+
+    def __init__(
+        self,
+        lang_in,
+        lang_out,
+        qwenmt_model="qwen-mt-turbo",
+        qwenmt_plus_model="qwen-plus-latest",
+        base_url=None,
+        api_key=None,
+        ignore_cache=False,
+    ):
+        super().__init__(lang_in, lang_out, ignore_cache)
+        self.qwenmt_model = qwenmt_model
+        self.qwenmt_plus_model = qwenmt_plus_model
+
+        self.client = openai.OpenAI(
+            base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key=api_key,
+            http_client=httpx.Client(
+                limits=httpx.Limits(
+                    max_connections=None, max_keepalive_connections=None
+                ),
+                timeout=60,
+            ),
+        )
+
+        self.add_cache_impact_parameters("qwenmt_model", self.qwenmt_model)
+        self.add_cache_impact_parameters("qwenmt_plus_model", self.qwenmt_plus_model)
+        self.token_count = AtomicInteger()
+        self.prompt_token_count = AtomicInteger()
+        self.completion_token_count = AtomicInteger()
+
+        # Convert language codes to QwenMT format
+        self.source_lang = self.lang_map.get(lang_in.lower(), lang_in)
+        self.target_lang = self.lang_map.get(lang_out.lower(), lang_out)
+
+        # Cache for single glossary
+        self._current_glossary = None
+
+    def set_glossaries(self, glossaries):
+        """Set glossary for translation. Only the first glossary will be used."""
+        if glossaries and len(glossaries) > 0:
+            self._current_glossary = glossaries[0]
+        else:
+            self._current_glossary = None
+
+    def get_cache_key(self, text):
+        """
+        Generate cache key including glossary information for QwenMT.
+        :param text: text to translate
+        :return: cache key string including glossary state
+        """
+        if not self._current_glossary:
+            return text
+
+        # Get active terms for the current text
+        terms = self._get_active_terms_for_text(text)
+        if not terms:
+            return text
+
+        # Serialize terms to create a consistent cache key
+        terms_json = json.dumps(terms, sort_keys=True, ensure_ascii=False)
+        return f"{terms_json}|{text}"
+
+    def _get_active_terms_for_text(self, text):
+        """Get only the glossary terms that appear in the given text"""
+        terms = []
+        if self._current_glossary:
+            # Get active entries for the current text from single glossary
+            active_entries = self._current_glossary.get_active_entries_for_text(text)
+            for source_term, target_term in active_entries:
+                terms.append({"source": source_term, "target": target_term})
+        return terms
+
+    @retry(
+        retry=retry_if_exception_type(openai.RateLimitError),
+        stop=stop_after_attempt(100),
+        wait=wait_exponential(multiplier=1, min=1, max=15),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
+    def do_translate(self, text, rate_limit_params: dict = None) -> str:
+        """Use QwenMT for regular translation"""
+        translation_options = {
+            "source_lang": self.source_lang,
+            "target_lang": self.target_lang,
+        }
+
+        # Add terms if glossary provided - only include terms found in the text
+        if self._current_glossary:
+            terms = self._get_active_terms_for_text(text)
+            if terms:
+                translation_options["terms"] = terms
+
+        messages = [{"role": "user", "content": text}]
+
+        response = self.client.chat.completions.create(
+            model=self.qwenmt_model,
+            messages=messages,
+            extra_body={"translation_options": translation_options},
+        )
+
+        self.update_token_count(response)
+        return response.choices[0].message.content.strip()
+
+    @retry(
+        retry=retry_if_exception_type(openai.RateLimitError),
+        stop=stop_after_attempt(100),
+        wait=wait_exponential(multiplier=1, min=1, max=15),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
+    def do_llm_translate(self, text, rate_limit_params: dict = None):
+        """Use Qwen-Plus for complex LLM translation"""
+        if text is None:
+            return None
+
+        messages = [{"role": "user", "content": text}]
+
+        response = self.client.chat.completions.create(
+            model=self.qwenmt_plus_model,
+            messages=messages,
+            max_tokens=2048,
+            temperature=0,
+        )
+
+        self.update_token_count(response)
+        return response.choices[0].message.content.strip()
+
+    def update_token_count(self, response):
+        """Update token count statistics"""
+        try:
+            if response.usage and response.usage.total_tokens:
+                self.token_count.inc(response.usage.total_tokens)
+            if response.usage and response.usage.prompt_tokens:
+                self.prompt_token_count.inc(response.usage.prompt_tokens)
+            if response.usage and response.usage.completion_tokens:
+                self.completion_token_count.inc(response.usage.completion_tokens)
+        except Exception as e:
+            logger.exception("Error updating token count")
+
+    def get_formular_placeholder(self, placeholder_id: int):
+        return "{v" + str(placeholder_id) + "}", f"{{\\s*v\\s*{placeholder_id}\\s*}}"
 
     def get_rich_text_left_placeholder(self, placeholder_id: int):
         return (
