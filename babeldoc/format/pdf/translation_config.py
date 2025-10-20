@@ -85,9 +85,6 @@ class SharedContextCrossSplitPart:
             for src, tgts in term_translations.items():
                 if not tgts:
                     continue
-                src_norm = Glossary.normalize_source(src)
-                if src_norm in self.norm_terms:
-                    continue
                 most_common_tgt = Counter(tgts).most_common(1)[0][0]
                 final_entries.append(GlossaryEntry(src, most_common_tgt))
 
@@ -102,6 +99,18 @@ class SharedContextCrossSplitPart:
             if self.auto_extracted_glossary:
                 all_glossaries.append(self.auto_extracted_glossary)
             return all_glossaries
+
+    def get_glossaries_for_translation(
+        self, auto_extract_enabled: bool
+    ) -> list[Glossary]:
+        with self._lock:
+            if auto_extract_enabled and self.auto_extracted_glossary:
+                return [self.auto_extracted_glossary]
+            else:
+                all_glossaries = list(self.user_glossaries)
+                if self.auto_extracted_glossary:
+                    all_glossaries.append(self.auto_extracted_glossary)
+                return all_glossaries
 
 
 class TranslationConfig:
@@ -155,8 +164,21 @@ class TranslationConfig:
         primary_font_family: str | None = None,
         only_include_translated_page: bool | None = False,
         save_auto_extracted_glossary: bool = True,
+        enable_graphic_element_process: bool = True,
+        merge_alternating_line_numbers: bool = True,
+        skip_translation: bool = False,
+        skip_form_render: bool = False,
+        skip_curve_render: bool = False,
+        only_parse_generate_pdf: bool = False,
+        remove_non_formula_lines: bool = False,
+        non_formula_line_iou_threshold: float = 0.9,
+        figure_table_protection_threshold: float = 0.9,
+        skip_formula_offset_calculation: bool = False,
+        term_extraction_translator: BaseTranslator | None = None,
+        metadata_extra_data: str | None = None,
     ):
         self.translator = translator
+        self.term_extraction_translator = term_extraction_translator or translator
         initial_user_glossaries = list(glossaries) if glossaries else []
 
         self.input_file = input_file
@@ -201,9 +223,11 @@ class TranslationConfig:
         self.min_text_length = min_text_length
         self.use_alternating_pages_dual = use_alternating_pages_dual
         self.ocr_workaround = ocr_workaround
+        self.merge_alternating_line_numbers = merge_alternating_line_numbers
 
         if self.ocr_workaround:
             self.skip_scanned_detection = True
+            self.disable_rich_text_translate = True
 
         # for backward compatibility
         if use_side_by_side_dual is False and use_alternating_pages_dual is False:
@@ -257,6 +281,11 @@ class TranslationConfig:
         self.add_formula_placehold_hint = add_formula_placehold_hint
         self.auto_extract_glossary = auto_extract_glossary
         self.auto_enable_ocr_workaround = auto_enable_ocr_workaround
+        self.skip_translation = skip_translation
+        self.only_parse_generate_pdf = only_parse_generate_pdf
+
+        if self.skip_translation or self.only_parse_generate_pdf:
+            self.auto_extract_glossary = False
 
         if auto_enable_ocr_workaround:
             self.ocr_workaround = False
@@ -276,6 +305,28 @@ class TranslationConfig:
         self.only_include_translated_page = only_include_translated_page
 
         self.save_auto_extracted_glossary = save_auto_extracted_glossary
+
+        # force disable table translate until the new model is ready
+        self.table_model = None
+        self.enable_graphic_element_process = enable_graphic_element_process
+        self.skip_form_render = skip_form_render
+        self.skip_curve_render = skip_curve_render
+        self.remove_non_formula_lines = remove_non_formula_lines
+        self.non_formula_line_iou_threshold = non_formula_line_iou_threshold
+        self.figure_table_protection_threshold = figure_table_protection_threshold
+        self.skip_formula_offset_calculation = skip_formula_offset_calculation
+
+        self.metadata_extra_data = metadata_extra_data
+
+        self.term_extraction_token_usage: dict[str, int] = {
+            "total_tokens": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_hit_prompt_tokens": 0,
+        }
+
+        if self.ocr_workaround:
+            self.remove_non_formula_lines = False
 
     def parse_pages(self, pages_str: str | None) -> list[tuple[int, int]] | None:
         """解析页码字符串，返回页码范围列表
@@ -378,6 +429,29 @@ class TranslationConfig:
     def cancel_translation(self):
         if self.progress_monitor is not None:
             self.progress_monitor.cancel()
+
+    def get_term_extraction_translator(self) -> BaseTranslator:
+        """Return the translator to use for automatic term extraction."""
+        return self.term_extraction_translator
+
+    def record_term_extraction_usage(
+        self,
+        total_tokens: int,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cache_hit_prompt_tokens: int,
+    ) -> None:
+        """Accumulate token usage for automatic term extraction."""
+        if total_tokens > 0:
+            self.term_extraction_token_usage["total_tokens"] += total_tokens
+        if prompt_tokens > 0:
+            self.term_extraction_token_usage["prompt_tokens"] += prompt_tokens
+        if completion_tokens > 0:
+            self.term_extraction_token_usage["completion_tokens"] += completion_tokens
+        if cache_hit_prompt_tokens > 0:
+            self.term_extraction_token_usage["cache_hit_prompt_tokens"] += (
+                cache_hit_prompt_tokens
+            )
 
 
 class TranslateResult:

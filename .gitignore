@@ -40,3 +40,10 @@ babeldoc/format/txt
 
 # uv
 uv.lock
+
+# Claude Code memory file
+CLAUDE.md
+/.claude
+babeldoc/format/playground
+temp.jpg
+AGENTS.md

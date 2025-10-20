@@ -38,6 +38,7 @@ def encode_image(image) -> bytes:
     else:
         img = image
 
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     # logger.debug(f"Image shape: {img.shape}")
     encoded = cv2.imencode(".jpg", img)[1].tobytes()
     # logger.debug(f"Encoded image size: {len(encoded)} bytes")
@@ -82,12 +83,12 @@ def predict_layout(
     # Send request
     # logger.debug(f"Sending request to {host}/inference")
     response = httpx.post(
-        f"{host}/analyze?min_sim=0.7&early_stop=0.99&timeout=480",
+        f"{host}/analyze?min_sim=0.7&early_stop=0.99&timeout=1800",
         files={"file": ("image.jpg", image_data, "image/jpeg")},
         headers={
             "Accept": "application/json",
         },
-        timeout=480,
+        timeout=1800,
         follow_redirects=True,
     )
 

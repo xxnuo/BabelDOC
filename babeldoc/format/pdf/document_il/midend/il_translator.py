@@ -4,12 +4,16 @@ import copy
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 
 import tiktoken
 from tqdm import tqdm
 
+import babeldoc.format.pdf.document_il.il_version_1 as il_version_1
+from babeldoc.babeldoc_exception.BabelDOCException import ContentFilterError
 from babeldoc.format.pdf.document_il import Document
+from babeldoc.format.pdf.document_il import GraphicState
 from babeldoc.format.pdf.document_il import Page
 from babeldoc.format.pdf.document_il import PdfFont
 from babeldoc.format.pdf.document_il import PdfFormula
@@ -28,6 +32,13 @@ from babeldoc.format.pdf.document_il.utils.layout_helper import (
 from babeldoc.format.pdf.document_il.utils.layout_helper import (
     is_same_style_except_size,
 )
+from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
+    is_placeholder_only_paragraph,
+)
+from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
+    is_pure_numeric_paragraph,
+)
+from babeldoc.format.pdf.document_il.utils.style_helper import GRAY80
 from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.translator.translator import BaseTranslator
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
@@ -52,6 +63,19 @@ class RichTextPlaceholder:
         self.left_regex_pattern = left_regex_pattern
         self.right_regex_pattern = right_regex_pattern
 
+    def to_dict(self) -> dict:
+        return {
+            "type": "rich_text",
+            "id": self.id,
+            "left_placeholder": self.left_placeholder,
+            "right_placeholder": self.right_placeholder,
+            "left_regex_pattern": self.left_regex_pattern,
+            "right_regex_pattern": self.right_regex_pattern,
+            "composition_chars": get_char_unicode_string(self.composition.pdf_character)
+            if self.composition and self.composition.pdf_character
+            else None,
+        }
+
 
 class FormulaPlaceholder:
     def __init__(
@@ -65,6 +89,17 @@ class FormulaPlaceholder:
         self.formula = formula
         self.placeholder = placeholder
         self.regex_pattern = regex_pattern
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "formula",
+            "id": self.id,
+            "placeholder": self.placeholder,
+            "regex_pattern": self.regex_pattern,
+            "formula_chars": get_char_unicode_string(self.formula.pdf_character)
+            if self.formula and self.formula.pdf_character
+            else None,
+        }
 
 
 class PbarContext:
@@ -81,36 +116,83 @@ class PbarContext:
 class DocumentTranslateTracker:
     def __init__(self):
         self.page = []
+        self.cross_page = []
+        # Track paragraphs that are combined due to cross-column detection within the same page
+        self.cross_column = []
 
     def new_page(self):
         page = PageTranslateTracker()
         self.page.append(page)
         return page
 
+    def new_cross_page(self):
+        page = PageTranslateTracker()
+        self.cross_page.append(page)
+        return page
+
+    def new_cross_column(self):
+        """Create and return a new PageTranslateTracker dedicated to cross-column merging."""
+        page = PageTranslateTracker()
+        self.cross_column.append(page)
+        return page
+
     def to_json(self):
         pages = []
         for page in self.page:
-            paragraphs = []
-            for para in page.paragraph:
-                i_str = getattr(para, "input", None)
-                o_str = getattr(para, "output", None)
-                pdf_unicode = getattr(para, "pdf_unicode", None)
-                llm_translate_trackers = getattr(para, "llm_translate_trackers", None)
-                llm_translate_trackers_json = []
+            paragraphs = self.convert_paragraph(page)
+            pages.append({"paragraph": paragraphs})
+        cross_page = []
+        for page in self.cross_page:
+            paragraphs = self.convert_paragraph(page)
+            cross_page.append({"paragraph": paragraphs})
+        cross_column = []
+        for page in self.cross_column:
+            paragraphs = self.convert_paragraph(page)
+            cross_column.append({"paragraph": paragraphs})
+        return json.dumps(
+            {
+                "cross_page": cross_page,
+                "cross_column": cross_column,
+                "page": pages,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    def convert_paragraph(self, page):
+        paragraphs = []
+        for para in page.paragraph:
+            i_str = getattr(para, "input", None)
+            o_str = getattr(para, "output", None)
+            pdf_unicode = getattr(para, "pdf_unicode", None)
+            llm_translate_trackers = getattr(para, "llm_translate_trackers", None)
+            placeholders = getattr(para, "placeholders", None)
+
+            llm_translate_trackers_json = []
+            if llm_translate_trackers:
                 for tracker in llm_translate_trackers:
                     llm_translate_trackers_json.append(tracker.to_dict())
-                if pdf_unicode is None or i_str is None:
-                    continue
-                paragraphs.append(
-                    {
-                        "input": i_str,
-                        "output": o_str,
-                        "pdf_unicode": pdf_unicode,
-                        "llm_translate_trackers": llm_translate_trackers_json,
-                    },
-                )
-            pages.append({"paragraph": paragraphs})
-        return json.dumps({"page": pages}, ensure_ascii=False, indent=2)
+
+            placeholders_json = []
+            if placeholders:
+                for placeholder in placeholders:
+                    placeholders_json.append(placeholder.to_dict())
+
+            if pdf_unicode is None or i_str is None:
+                continue
+            paragraph_json = {
+                "input": i_str,
+                "output": o_str,
+                "pdf_unicode": pdf_unicode,
+                "llm_translate_trackers": llm_translate_trackers_json,
+                "placeholders": placeholders_json,
+                "multi_paragraph_id": getattr(para, "multi_paragraph_id", None),
+                "multi_paragraph_index": getattr(para, "multi_paragraph_index", None),
+            }
+            paragraphs.append(
+                paragraph_json,
+            )
+        return paragraphs
 
 
 class PageTranslateTracker:
@@ -132,6 +214,17 @@ class ParagraphTranslateTracker:
 
     def set_input(self, input_text: str):
         self.input = input_text
+
+    def set_placeholders(
+        self, placeholders: list[RichTextPlaceholder | FormulaPlaceholder]
+    ):
+        self.placeholders = placeholders
+
+    def record_multi_paragraph_id(self, mid):
+        self.multi_paragraph_id = mid
+
+    def record_multi_paragraph_index(self, index):
+        self.multi_paragraph_index = index
 
     def set_output(self, output: str):
         self.output = output
@@ -204,7 +297,11 @@ class ILTranslator:
             self.tokenizer = tokenizer
 
         # Cache glossaries at initialization
-        self._cached_glossaries = self.shared_context_cross_split_part.get_glossaries()
+        self._cached_glossaries = (
+            self.shared_context_cross_split_part.get_glossaries_for_translation(
+                self.translation_config.auto_extract_glossary
+            )
+        )
 
         self.support_llm_translate = False
         try:
@@ -215,6 +312,8 @@ class ILTranslator:
             self.support_llm_translate = False
 
         self.use_as_fallback = False
+        self.add_content_filter_hint_lock = threading.Lock()
+        self.docs = None
 
     def calc_token_count(self, text: str) -> int:
         try:
@@ -223,6 +322,7 @@ class ILTranslator:
             return 0
 
     def translate(self, docs: Document):
+        self.docs = docs
         tracker = DocumentTranslateTracker()
 
         if not self.translation_config.shared_context_cross_split_part.first_paragraph:
@@ -298,6 +398,7 @@ class ILTranslator:
             executor.submit(
                 self.translate_paragraph,
                 paragraph,
+                page,
                 pbar,
                 tracker.new_paragraph(),
                 page_font_map,
@@ -401,6 +502,14 @@ class ILTranslator:
     ):
         if not paragraph.pdf_paragraph_composition:
             return
+
+        # Skip pure numeric paragraphs
+        if is_pure_numeric_paragraph(paragraph):
+            return None
+
+        # Skip paragraphs with only placeholders
+        if is_placeholder_only_paragraph(paragraph):
+            return None
         if len(paragraph.pdf_paragraph_composition) == 1:
             # 如果整个段落只有一个组成部分，那么直接返回，不需要套占位符等
             composition = paragraph.pdf_paragraph_composition[0]
@@ -729,6 +838,7 @@ class ILTranslator:
         if not translate_input:
             return None, None
         tracker.set_input(translate_input.unicode)
+        tracker.set_placeholders(translate_input.placeholders)
         text = translate_input.unicode
         if len(text) < self.translation_config.min_text_length:
             logger.debug(
@@ -752,7 +862,9 @@ class ILTranslator:
             return False
         paragraph.unicode = translated_text
         paragraph.pdf_paragraph_composition = self.parse_translate_output(
-            translate_input, translated_text, tracker.last_llm_translate_tracker()
+            translate_input,
+            translated_text,
+            tracker.last_llm_translate_tracker(),
         )
         for composition in paragraph.pdf_paragraph_composition:
             if (
@@ -777,6 +889,38 @@ class ILTranslator:
             llm_input = [
                 f"You are a professional and reliable machine translation engine responsible for translating the input text into {self.translation_config.lang_out}."
             ]
+
+        llm_input.append("When translating, please follow the following rules:")
+
+        rich_text_left_placeholder = (
+            self.translate_engine.get_rich_text_left_placeholder(1)
+        )
+        if isinstance(rich_text_left_placeholder, tuple):
+            rich_text_left_placeholder = rich_text_left_placeholder[0]
+        rich_text_right_placeholder = (
+            self.translate_engine.get_rich_text_right_placeholder(2)
+        )
+        if isinstance(rich_text_right_placeholder, tuple):
+            rich_text_right_placeholder = rich_text_right_placeholder[0]
+
+        # Create a structured prompt template for LLM translation
+        llm_input.append(
+            f'1. Do not translate style tags, such as "{rich_text_left_placeholder}xxx{rich_text_right_placeholder}"!'
+        )
+
+        formula_placeholder = self.translate_engine.get_formular_placeholder(3)
+        if isinstance(formula_placeholder, tuple):
+            formula_placeholder = formula_placeholder[0]
+
+        llm_input.append(
+            f'2. Do not translate formula placeholders, such as "{formula_placeholder}". The system will automatically replace the placeholders with the corresponding formulas.'
+        )
+        llm_input.append(
+            "3. If there is no need to translate (such as proper nouns, codes, etc.), then return the original text."
+        )
+        llm_input.append(
+            f"4. Only output the translation result in {self.translation_config.lang_out} without explanations and annotations."
+        )
 
         llm_context_hints = []
 
@@ -840,41 +984,8 @@ class ILTranslator:
                 for md_block in active_glossary_markdown_blocks:
                     llm_input.append(f"\n{md_block}\n")
 
-        llm_input.append("When translating, please follow the following rules:")
-
-        rich_text_left_placeholder = (
-            self.translate_engine.get_rich_text_left_placeholder(1)
-        )
-        if isinstance(rich_text_left_placeholder, tuple):
-            rich_text_left_placeholder = rich_text_left_placeholder[0]
-        rich_text_right_placeholder = (
-            self.translate_engine.get_rich_text_right_placeholder(2)
-        )
-        if isinstance(rich_text_right_placeholder, tuple):
-            rich_text_right_placeholder = rich_text_right_placeholder[0]
-
-        # Create a structured prompt template for LLM translation
-        llm_input.append(
-            f'1. Do not translate style tags, such as "{rich_text_left_placeholder}xxx{rich_text_right_placeholder}"!'
-        )
-
-        formula_placeholder = self.translate_engine.get_formular_placeholder(3)
-        if isinstance(formula_placeholder, tuple):
-            formula_placeholder = formula_placeholder[0]
-
-        llm_input.append(
-            f'2. Do not translate formula placeholders, such as "{formula_placeholder}". The system will automatically replace the placeholders with the corresponding formulas.'
-        )
-        llm_input.append(
-            "3. If there is no need to translate (such as proper nouns, codes, etc.), then return the original text."
-        )
-        llm_input.append(
-            f"4. Only output the translation result in {self.translation_config.lang_out} without explanations and annotations."
-        )
-        llm_input.append(f"5. Translate text into {self.translation_config.lang_out}.")
         prompt_template = f"""
 Now, please carefully read the following text to be translated and directly output your translation.\n\n{text}
-
 """
         llm_input.append(prompt_template)
 
@@ -882,9 +993,58 @@ Now, please carefully read the following text to be translated and directly outp
 
         return final_input
 
+    def add_content_filter_hint(self, page: Page, paragraph: PdfParagraph):
+        with self.add_content_filter_hint_lock:
+            new_box = il_version_1.Box(
+                x=paragraph.box.x,
+                y=paragraph.box.y2,
+                x2=paragraph.box.x2,
+                y2=paragraph.box.y2 + 1.1,
+            )
+            page.pdf_paragraph.append(
+                self._create_text(
+                    "翻译服务检测到内容可能包含不安全或敏感内容，请您避免翻译敏感内容，感谢您的配合。",
+                    GRAY80,
+                    new_box,
+                    1,
+                )
+            )
+            logger.info("success add content filter hint")
+
+    def _create_text(
+        self,
+        text: str,
+        color: GraphicState,
+        box: il_version_1.Box,
+        font_size: float = 4,
+    ):
+        style = il_version_1.PdfStyle(
+            font_id="base",
+            font_size=font_size,
+            graphic_state=color,
+        )
+        return il_version_1.PdfParagraph(
+            first_line_indent=False,
+            box=box,
+            vertical=False,
+            pdf_style=style,
+            unicode=text,
+            pdf_paragraph_composition=[
+                il_version_1.PdfParagraphComposition(
+                    pdf_same_style_unicode_characters=il_version_1.PdfSameStyleUnicodeCharacters(
+                        unicode=text,
+                        pdf_style=style,
+                        debug_info=True,
+                    ),
+                ),
+            ],
+            xobj_id=-1,
+        )
+
     def translate_paragraph(
         self,
         paragraph: PdfParagraph,
+        page: Page,
         pbar: tqdm | None = None,
         tracker: ParagraphTranslateTracker = None,
         page_font_map: dict[str, PdfFont] = None,
@@ -910,7 +1070,10 @@ Now, please carefully read the following text to be translated and directly outp
                 # Perform translation
                 if self.support_llm_translate:
                     llm_prompt = self.generate_prompt_for_llm(
-                        text, title_paragraph, local_title_paragraph, translate_input
+                        text,
+                        title_paragraph,
+                        local_title_paragraph,
+                        translate_input,
                     )
                     llm_translate_tracker.set_input(llm_prompt)
                     translated_text = self.translate_engine.llm_translate(
@@ -933,6 +1096,10 @@ Now, please carefully read the following text to be translated and directly outp
                 self.post_translate_paragraph(
                     paragraph, tracker, translate_input, translated_text
                 )
+            except ContentFilterError as e:
+                logger.warning(f"ContentFilterError: {e.message}")
+                self.add_content_filter_hint(page, paragraph)
+                return
             except Exception as e:
                 logger.exception(
                     f"Error translating paragraph. Paragraph: {paragraph.debug_id} ({paragraph.unicode}). Error: {e}. ",

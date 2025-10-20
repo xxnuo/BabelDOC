@@ -28,14 +28,14 @@ jobs:
     outputs:
       is_release: ${{ steps.check-version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: true
           fetch-depth: 2
           token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Setup uv with Python 3.12
-        uses: astral-sh/setup-uv@bd01e18f51369d5a26f1651c3cb451d3417e3bba # v6.3.1
+        uses: astral-sh/setup-uv@4959332f0f014c5280e7eac8b70c90cb574c9f9b # v6.6.0
         with:
           python-version: "3.12"
           enable-cache: true
@@ -90,7 +90,7 @@ jobs:
 
     steps:
       - name: Download all the dists
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: python-package-distributions
           path: dist/
@@ -114,7 +114,7 @@ jobs:
 
     steps:
       - name: Download all the dists
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: python-package-distributions
           path: dist/
@@ -139,7 +139,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: true
           fetch-depth: 2
