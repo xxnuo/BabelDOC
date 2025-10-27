@@ -44,15 +44,15 @@ class OnnxModel(DocLayoutModel):
         metadata = {d.key: d.value for d in model.metadata_props}
         self._stride = ast.literal_eval(metadata["stride"])
         self._names = ast.literal_eval(metadata["names"])
-        providers = []
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 
-        available_providers = onnxruntime.get_available_providers()
-        for provider in available_providers:
-            # disable dml|cuda|
-            # directml/cuda may encounter problems under special circumstances
-            if re.match(r"cpu", provider, re.IGNORECASE):
-                logger.info(f"Available Provider: {provider}")
-                providers.append(provider)
+        # available_providers = onnxruntime.get_available_providers()
+        # for provider in available_providers:
+        #     # disable dml|cuda|
+        #     # directml/cuda may encounter problems under special circumstances
+        #     if re.match(r"cpu", provider, re.IGNORECASE):
+        #         logger.info(f"Available Provider: {provider}")
+        #         providers.append(provider)
         self.model = onnxruntime.InferenceSession(
             model.SerializeToString(),
             providers=providers,
